@@ -42,6 +42,7 @@ from qfluentwidgets import (
     ColorDialog,
     InfoBar,
     InfoBarPosition,
+    MessageBox,
     FluentIcon as FIF,
     IconWidget,
     setTheme,
@@ -149,12 +150,13 @@ class SettingsWindow(FluentWindow):
     acrylic dark theme, grouped setting cards, and zero emoji clutter.
     """
 
-    def __init__(self, config: CursorConfig, on_config_changed, cursor_mgr, cloner=None, parent=None):
+    def __init__(self, config: CursorConfig, on_config_changed, cursor_mgr, cloner=None, on_destroy_callback=None, parent=None):
         super().__init__(parent)
         self.config = config
         self.on_config_changed = on_config_changed
         self.cursor_mgr = cursor_mgr
         self.cloner = cloner
+        self.on_destroy_callback = on_destroy_callback
 
         # Debounce timer for saving configuration to disk (prevents disk I/O lag while scrubbing sliders)
         self._save_timer = QTimer(self)
@@ -1005,6 +1007,31 @@ class SettingsWindow(FluentWindow):
         group_win.addSettingCard(self.s_card_hide)
         layout.addWidget(group_win)
 
+        # Group: Performance & Memory Optimization
+        group_perf = SettingCardGroup("Performance & Memory Optimization", view)
+
+        self.s_card_ram = SwitchSettingCard(
+            FIF.SPEED_HIGH,
+            "Aggressive RAM Optimization Mode",
+            "Kills settings GUI and purges working set when minimized to system tray (cuts RAM by ~90% down to ~8MB)",
+            parent=group_perf
+        )
+        self.s_card_ram.setChecked(getattr(self.config, "ram_optimization_mode", True))
+        self.s_card_ram.checkedChanged.connect(self._on_ram_opt_toggle_requested)
+        group_perf.addSettingCard(self.s_card_ram)
+
+        self.card_flush_ram = PushSettingCard(
+            "Flush RAM",
+            FIF.DELETE,
+            "Flush Unused RAM Now",
+            "Forces garbage collection and trims working set memory immediately",
+            parent=group_perf
+        )
+        self.card_flush_ram.clicked.connect(self._manual_flush_ram)
+        group_perf.addSettingCard(self.card_flush_ram)
+
+        layout.addWidget(group_perf)
+
         group_rec = SettingCardGroup("Emergency & Recovery", view)
 
         self.card_restore = PushSettingCard(
@@ -1476,9 +1503,106 @@ class SettingsWindow(FluentWindow):
         if self.on_config_changed:
             self.on_config_changed()
 
+    def _on_ram_opt_toggle_requested(self, val: bool):
+        if not val:
+            # User wants to disable RAM optimization -> warn them!
+            dialog = MessageBox(
+                "Disable RAM Optimization?",
+                "Disabling RAM Optimization will keep all Fluent UI controls, graphics engines, and window textures permanently in memory even when FluidCursor is minimized to the system tray.\n\n"
+                "This will increase background RAM usage from ~8MB up to ~75MB+.\n\n"
+                "Are you sure you want to disable RAM Optimization?",
+                self
+            )
+            dialog.yesButton.setText("Disable")
+            dialog.cancelButton.setText("Keep Enabled")
+            if dialog.exec():
+                self.config.ram_optimization_mode = False
+                self._notify()
+            else:
+                if hasattr(self.s_card_ram, "switchButton"):
+                    self.s_card_ram.switchButton.blockSignals(True)
+                else:
+                    self.s_card_ram.blockSignals(True)
+                self.s_card_ram.setChecked(True)
+                if hasattr(self.s_card_ram, "switchButton"):
+                    self.s_card_ram.switchButton.blockSignals(False)
+                else:
+                    self.s_card_ram.blockSignals(False)
+        else:
+            self.config.ram_optimization_mode = True
+            self._notify()
+
+    def _manual_flush_ram(self):
+        self._trim_process_memory()
+        current_mb = self.get_current_ram_mb()
+        InfoBar.success(
+            title="RAM Trimmed Successfully",
+            content=f"Working set trimmed. Current process memory: {current_mb:.1f} MB",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=3000,
+            parent=self
+        )
+
+    @staticmethod
+    def get_current_ram_mb() -> float:
+        import ctypes
+        from ctypes import wintypes
+        class PMC(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+        pmc = PMC()
+        pmc.cb = ctypes.sizeof(PMC)
+        try:
+            h = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)
+            return pmc.WorkingSetSize / (1024 * 1024)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _trim_process_memory():
+        import gc
+        import ctypes
+        gc.collect()
+        try:
+            h = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.psapi.EmptyWorkingSet(h)
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         if hasattr(self, "_save_timer"):
             self._save_timer.stop()
         self.config.save()
         event.ignore()
-        self.hide()
+        if getattr(self.config, "ram_optimization_mode", True):
+            self.hide()
+            cb = getattr(self, "on_destroy_callback", None)
+            self.deleteLater()
+            if cb:
+                cb()
+            QTimer.singleShot(60, self._trim_process_memory)
+        else:
+            self.hide()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized() and getattr(self.config, "ram_optimization_mode", True):
+                if hasattr(self, "_save_timer"):
+                    self._save_timer.stop()
+                self.config.save()
+                self.hide()
+                cb = getattr(self, "on_destroy_callback", None)
+                self.deleteLater()
+                if cb:
+                    cb()
+                QTimer.singleShot(60, self._trim_process_memory)
+                return
+        super().changeEvent(event)

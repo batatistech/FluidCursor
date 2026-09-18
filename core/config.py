@@ -44,6 +44,7 @@ class CursorConfig:
     border_color: str = "#1E293B"       # Outer stroke color
     ripple_color: str = "#00D2FF"       # Click ripple color
     toggle_hotkey: str = "F9"           # Hotkey to toggle on/off
+    ram_optimization_mode: bool = True  # Aggressive RAM mode: destroys GUI when minimized & trims working set
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> 'CursorConfig':

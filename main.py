@@ -99,8 +99,14 @@ def main():
     def on_config_changed():
         pass
 
-    # Create Settings Window with Fluent UI
-    settings_win = SettingsWindow(config, on_config_changed, cursor_mgr, cloner=overlay.cloner)
+    # Create Settings Window with Fluent UI (lazy when started with --tray)
+    start_in_tray = getattr(args, "tray", False)
+    if start_in_tray and getattr(config, "ram_optimization_mode", True):
+        settings_win = None
+        # Trim working set immediately
+        SettingsWindow._trim_process_memory()
+    else:
+        settings_win = SettingsWindow(config, on_config_changed, cursor_mgr, cloner=overlay.cloner)
 
     # Create System Tray Icon
     tray_icon = CursorTrayIcon(overlay, settings_win)
@@ -109,7 +115,6 @@ def main():
     # Synchronize toggle state between overlay hotkey, tray, and settings window
     def on_state_toggled(is_enabled: bool):
         tray_icon.update_state(is_enabled)
-        settings_win.update_enabled_state(is_enabled)
 
     overlay.on_state_toggled = on_state_toggled
 
@@ -117,7 +122,7 @@ def main():
     overlay.show()
 
     # Show Fluent GUI control center unless started with --tray
-    if not getattr(args, "tray", False):
+    if settings_win and not start_in_tray:
         settings_win.show()
         settings_win.raise_()
         settings_win.activateWindow()

@@ -8,10 +8,12 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction
 from PyQt6.QtCore import Qt
 
 class CursorTrayIcon(QSystemTrayIcon):
-    def __init__(self, overlay, settings_window, parent=None):
+    def __init__(self, overlay, settings_window=None, parent=None):
         super().__init__(parent)
         self.overlay = overlay
         self.settings_window = settings_window
+        if self.settings_window:
+            self.settings_window.on_destroy_callback = self._on_settings_destroyed
 
         # Generate sleek procedural icon
         self.setIcon(self._create_tray_icon())
@@ -110,6 +112,9 @@ class CursorTrayIcon(QSystemTrayIcon):
     def _on_toggle_clicked(self):
         self.overlay.toggle_enabled()
 
+    def _on_settings_destroyed(self):
+        self.settings_window = None
+
     def update_state(self, is_enabled: bool):
         self.toggle_action.setChecked(is_enabled)
         if is_enabled:
@@ -118,12 +123,25 @@ class CursorTrayIcon(QSystemTrayIcon):
         else:
             self.title_action.setText("FluidCursor Paused")
             self.setToolTip("FluidCursor - Paused (F9 to toggle)")
+        if self.settings_window:
+            try:
+                self.settings_window.update_enabled_state(is_enabled)
+            except Exception:
+                pass
 
     def _open_settings(self):
-        if self.settings_window:
-            self.settings_window.show()
-            self.settings_window.activateWindow()
-            self.settings_window.raise_()
+        if self.settings_window is None:
+            from ui.settings_window import SettingsWindow
+            self.settings_window = SettingsWindow(
+                self.overlay.config,
+                lambda: None,
+                self.overlay.cursor_mgr,
+                cloner=self.overlay.cloner,
+                on_destroy_callback=self._on_settings_destroyed
+            )
+        self.settings_window.show()
+        self.settings_window.activateWindow()
+        self.settings_window.raise_()
 
     def _restore_system_cursor(self):
         self.overlay.cursor_mgr.restore_system_cursor()
