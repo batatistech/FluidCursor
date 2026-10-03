@@ -1,0 +1,35 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local preferences; defaults are in core/config.py
+/config.json
+.env
+.env.*
+
+# Generated files
+/work/
+/build/
+/dist/
+*.log
+*.tmp
+*.bak
+*.pdb
+*.zip
+*.exe
+!/FluidCursor.exe
+/*.png
+/*.jpg
+
+# Editor and Windows metadata
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

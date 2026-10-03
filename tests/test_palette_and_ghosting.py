@@ -24,8 +24,10 @@ class PaletteAndGhostTests(unittest.TestCase):
         image = QImage(96, 96, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(Qt.GlobalColor.transparent)
         painter = QPainter(image)
-        CursorRenderer.draw_cursor(painter, 36, 36, 1, 0, theme, 28,
-                                   fill, border, False, role)
+        # Compare palette changes at the same loading-spinner animation phase.
+        with patch('core.theme.time.time', return_value=1000.0):
+            CursorRenderer.draw_cursor(painter, 36, 36, 1, 0, theme, 28,
+                                       fill, border, False, role)
         painter.end()
         return bytes(image.constBits().asstring(image.sizeInBytes()))
     def test_only_custom_arrow_obeys_palette(self):
