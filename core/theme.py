@@ -47,7 +47,7 @@ class CursorRenderer:
         painter.restore()
 
         # The image top-left is placed at (-hotspot_x, -hotspot_y) so the hotspot is exactly at (0, 0)
-        painter.drawImage(-hotspot_x, -hotspot_y, qimg)
+        painter.drawImage(QPointF(-float(hotspot_x), -float(hotspot_y)), qimg)
         painter.restore()
 
     @staticmethod
@@ -64,6 +64,18 @@ class CursorRenderer:
         is_clicking: bool,
         cursor_type: str = "normal"
     ):
+        # Theme palettes are intrinsic. Only Custom Colors may use the user palette;
+        # text/link/resize roles always keep a legible, consistent Windows-like scheme.
+        if cursor_type != "normal":
+            primary_color_hex, border_color_hex = "#FFFFFF", "#17202A"
+        elif theme_name != "custom_arrow":
+            primary_color_hex, border_color_hex = {
+                "aero_modern": ("#FFFFFF", "#1E293B"),
+                "neon_glow": ("#E7FCFF", "#00D2FF"),
+                "macos_fluid": ("#0F172A", "#FFFFFF"),
+                "cyber_arrow": ("#F3FBFF", "#18C7E3"),
+                "minimal_dot": ("#FFFFFF", "#64748B"),
+            }.get(theme_name, ("#FFFFFF", "#1E293B"))
         painter.save()
         # Translate to exact hotspot position
         painter.translate(x, y)
@@ -90,14 +102,14 @@ class CursorRenderer:
         elif cursor_type == "sizens":
             CursorRenderer._draw_resize_double(painter, s, 90.0, primary_color_hex, border_color_hex, is_clicking)
         elif cursor_type == "sizenwse":
-            CursorRenderer._draw_resize_double(painter, s, 135.0, primary_color_hex, border_color_hex, is_clicking)
-        elif cursor_type == "sizenesw":
             CursorRenderer._draw_resize_double(painter, s, 45.0, primary_color_hex, border_color_hex, is_clicking)
+        elif cursor_type == "sizenesw":
+            CursorRenderer._draw_resize_double(painter, s, 135.0, primary_color_hex, border_color_hex, is_clicking)
         elif cursor_type == "sizeall":
             CursorRenderer._draw_resize_all(painter, s, primary_color_hex, border_color_hex, is_clicking)
         elif cursor_type == "hand":
             if abs(tilt_deg) > 0.01:
-                painter.rotate(tilt_deg * 0.6)
+                painter.rotate(tilt_deg)  # Follow the complete movement heading, including downward motion.
             CursorRenderer._draw_hand(painter, s, primary_color_hex, border_color_hex, is_clicking)
         elif cursor_type == "cross":
             CursorRenderer._draw_crosshair(painter, s, primary_color_hex, border_color_hex, is_clicking)
@@ -120,6 +132,28 @@ class CursorRenderer:
                 CursorRenderer._draw_aero_modern(painter, s, primary_color_hex, border_color_hex, is_clicking)
 
         painter.restore()
+
+    @staticmethod
+    def draw_motion_ghosts(painter, points, win_x, win_y, theme_name, size,
+                           fill, outline, cursor_type="normal", cloned=None):
+        """Draw bounded, fading replicas behind the live cursor; preserve painter state."""
+        count = 0
+        for x, y, age in points[-9:]:
+            local_x, local_y = x - win_x, y - win_y
+            if age >= 1.0 or not (-45 <= local_x <= 340 and -45 <= local_y <= 340):
+                continue
+            painter.save()
+            painter.setOpacity(0.37 * (1.0 - age) ** 1.6)
+            if cloned is not None:
+                image, hotspot_x, hotspot_y = cloned
+                CursorRenderer.draw_cloned_cursor(painter, local_x, local_y,
+                    0.94, 0.0, image, hotspot_x, hotspot_y, False)
+            else:
+                CursorRenderer.draw_cursor(painter, local_x, local_y, 0.94,
+                    0.0, theme_name, size, fill, outline, False, cursor_type)
+            painter.restore()
+            count += 1
+        return count
 
     @staticmethod
     def _create_standard_arrow_path(s: float) -> QPainterPath:
@@ -298,35 +332,26 @@ class CursorRenderer:
 
     @staticmethod
     def _draw_ibeam(painter: QPainter, s: float, prim_hex: str, border_hex: str, is_clicking: bool):
-        # Modern vector I-Beam centered at (0, 0)
-        h = 10.0 * s
-        w = 4.5 * s
-
+        """A centered, high-contrast text caret with clearly defined serifs."""
         path = QPainterPath()
-        # Top serif
-        path.moveTo(-w, -h)
-        path.lineTo(w, -h)
-        # Vertical stem
-        path.moveTo(0.0, -h)
-        path.lineTo(0.0, h)
-        # Bottom serif
-        path.moveTo(-w, h)
-        path.lineTo(w, h)
-
-        # Shadow
+        h, w = 10.0 * s, 4.8 * s
+        path.moveTo(-w, -h); path.lineTo(w, -h)
+        path.moveTo(0, -h); path.lineTo(0, h)
+        path.moveTo(-w, h); path.lineTo(w, h)
         painter.save()
-        painter.translate(1.5 * s, 1.5 * s)
-        pen_sh = QPen(QColor(0, 0, 0, 90), 2.8 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_sh)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.translate(0.85*s, 1.2*s)
+        painter.setPen(QPen(QColor(0, 0, 0, 105), 5.0*s,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawPath(path)
+        painter.translate(-0.85*s, -1.2*s)
+        painter.setPen(QPen(QColor(border_hex), 4.3*s,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawPath(path)
+        painter.setPen(QPen(QColor(prim_hex), 2.25*s,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawPath(path)
         painter.restore()
-
-        # Core stroke
-        pen_core = QPen(QColor(prim_hex), 2.2 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen_core)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(path)
 
     @staticmethod
     def _draw_resize_double(painter: QPainter, s: float, angle_deg: float, prim_hex: str, border_hex: str, is_clicking: bool):
@@ -382,35 +407,47 @@ class CursorRenderer:
 
     @staticmethod
     def _draw_hand(painter: QPainter, s: float, prim_hex: str, border_hex: str, is_clicking: bool):
-        # Pointing hand with fingertip anchored at (0, 0)
-        path = QPainterPath()
-        path.moveTo(0.0, 0.0)             # Index fingertip
-        path.lineTo(3.5 * s, 0.0)
-        path.lineTo(3.5 * s, 7.5 * s)
-        path.lineTo(7.5 * s, 9.5 * s)     # Knuckles
-        path.lineTo(7.5 * s, 14.5 * s)
-        path.lineTo(3.5 * s, 18.0 * s)    # Palm
-        path.lineTo(-1.5 * s, 18.0 * s)
-        path.lineTo(-4.5 * s, 13.0 * s)   # Thumb
-        path.lineTo(-2.0 * s, 7.5 * s)
-        path.lineTo(-1.0 * s, 0.0)
-        path.closeSubpath()
-
-        # Shadow
+        """Compact pointing hand with an exact fingertip hotspot and clear knuckles."""
         painter.save()
-        painter.translate(1.5 * s, 2.5 * s)
-        painter.fillPath(path, QColor(0, 0, 0, 80))
+        painter.scale(s*.91, s*.91)
+        shape=QPainterPath()
+        shape.moveTo(-2.1,2.1)
+        shape.cubicTo(-2.1,-.7,2.1,-.7,2.1,2.1)
+        shape.lineTo(2.1,11.2)
+        shape.cubicTo(3.4,8.1,6.8,8.2,7.1,11.6)
+        shape.cubicTo(9.1,9.5,11.9,10.5,12.0,13.8)
+        shape.cubicTo(14.1,12.9,16.4,14.5,16.2,17.2)
+        shape.lineTo(15.0,21.0)
+        shape.cubicTo(14.1,24.8,12.4,26.2,8.2,26.2)
+        shape.lineTo(3.2,26.2)
+        shape.cubicTo(.8,26.2,-1.0,25.2,-2.7,22.8)
+        shape.lineTo(-7.9,15.9)
+        shape.cubicTo(-10.1,12.8,-7.3,10.4,-5.0,12.0)
+        shape.lineTo(-2.1,15.2)
+        shape.closeSubpath()
+        # Single silhouette without oversized finger joints or fingernails.
+        painter.save()
+        painter.translate(.7,1.0)
+        painter.fillPath(shape,QColor(0,0,0,55))
         painter.restore()
-
-        # Fill & Border
-        painter.setBrush(QBrush(QColor(prim_hex)))
-        painter.setPen(QPen(QColor(border_hex), 1.8 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawPath(path)
-
-        # Index fingertip highlight
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(border_hex if border_hex != "#1E293B" else "#00D2FF")))
-        painter.drawEllipse(QPointF(1.5 * s, 1.5 * s), 2.0 * s, 2.0 * s)
+        fill=QLinearGradient(-3,-2,15,28)
+        base=QColor(prim_hex)
+        fill.setColorAt(0,base.lighter(105))
+        fill.setColorAt(1,base.darker(106))
+        painter.setBrush(QBrush(fill))
+        painter.setPen(QPen(QColor(border_hex),1.4,Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+        painter.drawPath(shape)
+        knuckles=QPainterPath()
+        knuckles.moveTo(7.0,11.8);knuckles.cubicTo(7.1,13.4,6.6,15.4,6.4,16.3)
+        knuckles.moveTo(12.0,13.9);knuckles.cubicTo(12.0,15.8,11.5,17.0,10.8,18.2)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(border_hex),.8,Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+        painter.drawPath(knuckles)
+        painter.setPen(QPen(QColor(255,255,255,105),.7))
+        painter.drawLine(QPointF(-.4,3),QPointF(-.4,10))
+        painter.restore()
 
     @staticmethod
     def _draw_crosshair(painter: QPainter, s: float, prim_hex: str, border_hex: str, is_clicking: bool):

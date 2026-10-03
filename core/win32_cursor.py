@@ -93,6 +93,8 @@ class Win32CursorManager:
     
     def __init__(self):
         self._is_hidden = False
+        self.active_cursor_handle = 0
+        self.active_cursor_visible = False
         self._pt = POINT()
         self._ci = CURSORINFO()
         self._ci.cbSize = ctypes.sizeof(CURSORINFO)
@@ -142,13 +144,20 @@ class Win32CursorManager:
         Fast kernel query using GetCursorInfo with zero cross-process blocking.
         """
         try:
+            # GetCursorInfo clears cbSize on this Windows build. Reset it for every query.
+            self._ci.cbSize = ctypes.sizeof(CURSORINFO)
             if user32.GetCursorInfo(ctypes.byref(self._ci)):
-                h = self._ci.hCursor
+                h = int(self._ci.hCursor or 0)
+                self.active_cursor_handle = h
+                self.active_cursor_visible = bool(self._ci.flags & 1)
                 if h in self.cursor_handles:
                     return self.cursor_handles[h]
+                return "custom" if h else "normal"
         except Exception:
             pass
 
+        self.active_cursor_handle = 0
+        self.active_cursor_visible = False
         return "normal"
 
     def is_key_pressed(self, vk_code: int) -> bool:

@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 from typing import Tuple, Optional, Dict
 from PyQt6.QtGui import QImage, QColor
+from PyQt6.QtCore import Qt
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
@@ -211,7 +212,9 @@ class SystemCursorCloner:
 
     def __init__(self):
         self.cursor_cache: Dict[str, Tuple[QImage, int, int]] = {}
+        self.custom_cache = {}  # Decode unfamiliar HCURSORs only once per handle.
         self.pre_capture_system_cursors()
+        self._normalise_text_cursor()
 
     def pre_capture_system_cursors(self):
         """Captures each cursor from the active Windows theme registry or default system cursors."""
@@ -249,8 +252,53 @@ class SystemCursorCloner:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _ink_height(image):
+        """Measure visible glyph height, not padded .cur canvas dimensions."""
+        rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        raw = bytes(rgba.constBits().asstring(rgba.sizeInBytes()))
+        stride = rgba.bytesPerLine()
+        rows = [y for y in range(rgba.height())
+                if any(a > 16 for a in raw[y*stride+3:y*stride+rgba.width()*4:4])]
+        return rows[-1] - rows[0] + 1 if rows else 0
+
+    def _normalise_text_cursor(self):
+        """Registry themes can supply a 128px I-beam beside a 32px arrow."""
+        arrow = self.cursor_cache.get('normal')
+        beam = self.cursor_cache.get('ibeam')
+        if not arrow or not beam:
+            return
+        target = max(20.0, min(28.0, self._ink_height(arrow[0]) * 1.12))
+        ink = self._ink_height(beam[0])
+        if not ink or ink <= target * 1.35:
+            return
+        factor = target / ink
+        image, hx, hy = beam
+        resized = image.scaled(max(1, round(image.width()*factor)),
+                               max(1, round(image.height()*factor)),
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        self.cursor_cache['ibeam'] = (resized, hx*factor, hy*factor)
+
     def get_cloned_cursor(self, cursor_type: str) -> Optional[Tuple[QImage, int, int]]:
         """Returns (QImage, hotspot_x, hotspot_y) for the requested cursor type from cache."""
         if cursor_type in self.cursor_cache:
             return self.cursor_cache[cursor_type]
         return self.cursor_cache.get("normal")
+
+    def get_cursor_by_handle(self, handle):
+        """Preserve an application's own text/link/resize cursor if its handle is unknown."""
+        if not handle:
+            return None
+        if handle not in self.custom_cache:
+            image = capture_hcursor(handle)
+            # A fully transparent icon is not a usable fallback cursor.
+            if image:
+                img = image[0].convertToFormat(QImage.Format.Format_RGBA8888)
+                pixels = bytes(img.constBits().asstring(img.sizeInBytes()))
+                if not any(pixels[3::4]):
+                    image = None
+            if len(self.custom_cache) >= 32:
+                self.custom_cache.pop(next(iter(self.custom_cache)))
+            self.custom_cache[handle] = image
+        return self.custom_cache[handle]

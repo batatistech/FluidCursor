@@ -59,6 +59,10 @@ class CursorPhysics:
         self.tilt_angle: float = 0.0       # Current degrees
         self.target_tilt: float = 0.0      # Target degrees
         self.held_tilt_target: float = 0.0 # Held degrees during return delay
+        self.motion_heading = None  # Circularly smoothed direction, in degrees
+        self.tilt_dir_x: float = 0.0       # Dedicated recent hardware direction vector
+        self.tilt_dir_y: float = 0.0       # Avoids X/Y staircase jitter on diagonal strokes
+        self.tilt_motion_samples = []       # Short rolling hardware displacement history
         self.held_raw_dir: float = 0.0     # Raw heading/direction of held stroke
         self.last_motion_time: float = time.perf_counter() # Timestamp of latest active movement
 
@@ -262,7 +266,7 @@ class CursorPhysics:
         if tilt_enabled and abs(tilt_strength) > 0.01:
             speed = self.speed
             hw_speed = math.hypot(self.hw_vx, self.hw_vy)
-            neutral_angle = -112.2  # Resting pointer heading (~22.5° left of North)
+            neutral_angle = -112.2  # Resting pointer heading (~22.5Â° left of North)
 
             deadzone = max(0.0, tilt_deadzone)
             deadzone_span = max(18.0, deadzone * 0.6)
@@ -274,10 +278,35 @@ class CursorPhysics:
             if is_active_move:
                 self.last_motion_time = now
 
-                # Use smooth filtered velocity to calculate stable movement heading without integer pixel quantization noise
-                use_vx = self.vx if abs(self.vx) > 0.1 else self.hw_vx
-                use_vy = self.vy if abs(self.vy) > 0.1 else self.hw_vy
-                move_angle = math.degrees(math.atan2(use_vy, use_vx))
+                # Track direction separately from speed. Windows quantises smooth
+                # diagonal motion into alternating X/Y pixel steps. A short rolling
+                # displacement vector reconstructs the physical stroke direction.
+                if hw_dist > 0.15:
+                    self.tilt_motion_samples.append((hw_dx, hw_dy))
+                    if len(self.tilt_motion_samples) > 8:
+                        del self.tilt_motion_samples[0]
+
+                if self.tilt_motion_samples:
+                    dir_x = sum(v[0] for v in self.tilt_motion_samples)
+                    dir_y = sum(v[1] for v in self.tilt_motion_samples)
+                    norm = math.hypot(dir_x, dir_y)
+                    if norm > 1e-6:
+                        self.tilt_dir_x, self.tilt_dir_y = dir_x / norm, dir_y / norm
+
+                if abs(self.tilt_dir_x) + abs(self.tilt_dir_y) > 1e-6:
+                    measured_angle = math.degrees(math.atan2(self.tilt_dir_y, self.tilt_dir_x))
+                else:
+                    measured_angle = math.degrees(math.atan2(self.hw_vy, self.hw_vx))
+
+                if self.motion_heading is None:
+                    self.motion_heading = measured_angle
+                else:
+                    turn = ((measured_angle - self.motion_heading + 180.0) % 360.0) - 180.0
+                    # Tiny changes are pixel quantisation; deliberate turns remain fast.
+                    if abs(turn) > 0.65:
+                        steer_rate = 30.0 if abs(turn) > 24.0 else 20.0
+                        self.motion_heading += turn * (1.0 - math.exp(-steer_rate * dt))
+                move_angle = self.motion_heading
 
                 # Smoothly ramp in tilt past deadzone threshold to eliminate abrupt direction jumps
                 t_ramp = min(1.0, max(0.0, (speed - deadzone) / deadzone_span))
@@ -311,12 +340,17 @@ class CursorPhysics:
                         target_deflection = max(-max_l, tilt_target)
 
                 # Continuous Phase Unwrapping:
-                # Eliminates the +-180° branch cut jump at down-right (+67.8°) by wrapping relative to current target
+                # Eliminates the +-180Â° branch cut jump at down-right (+67.8Â°) by wrapping relative to current target
                 if abs(self.held_tilt_target) > 2.0:
                     step = ((target_deflection - self.held_tilt_target + 180.0) % 360.0) - 180.0
                     continuous_target = self.held_tilt_target + step
                 else:
-                    continuous_target = target_deflection
+                    # At the antipodal heading, +/-180 is the same orientation.
+                    # Choose one side consistently for a newly started stroke.
+                    continuous_target = (abs(target_deflection) if
+                                         abs(target_deflection) >= 170.0 and
+                                         tilt_mode in ("physics_forward", "physics_opposing", "physics")
+                                         else target_deflection)
 
                 active_target = continuous_target * deadzone_ease
 
@@ -357,7 +391,7 @@ class CursorPhysics:
                     lerp_rate = 18.0
                 else:
                     # Delay elapsed (or disabled): return to neutral resting orientation
-                    self.target_tilt = 0.0
+                    self.target_tilt = round(self.tilt_angle / 360.0) * 360.0
                     if tilt_decay_enabled:
                         # Smooth slow return to neutral orientation
                         decay_rate = max(0.6, 6.5 - tilt_decay_speed * 5.5)
@@ -366,19 +400,30 @@ class CursorPhysics:
                         # Direct return
                         lerp_rate = 22.0
 
-                    if abs(self.tilt_angle) < 0.5:
+                    if abs(self.tilt_angle - self.target_tilt) < 0.5:
                         self.held_tilt_target = 0.0
                         self.held_raw_dir = 0.0
+                        self.motion_heading = None
+                        self.tilt_dir_x = 0.0
+                        self.tilt_dir_y = 0.0
+                        self.tilt_motion_samples.clear()
                         self.tilt_angle = 0.0
+                        self.target_tilt = 0.0
 
             # Angular interpolation taking shortest rotational arc
-            diff = ((self.target_tilt - self.tilt_angle + 180.0) % 360.0) - 180.0
+            # Targets are already unwrapped against the previous heading.
+            # Re-wrapping here makes the tilt reverse at the 180-degree seam.
+            diff = self.target_tilt - self.tilt_angle
             tilt_lerp = 1.0 - math.exp(-lerp_rate * dt)
             self.tilt_angle += diff * tilt_lerp
-            self.tilt_angle = ((self.tilt_angle + 180.0) % 360.0) - 180.0
         else:
             self.tilt_angle = 0.0
             self.held_tilt_target = 0.0
+            self.held_raw_dir = 0.0
+            self.motion_heading = None
+            self.tilt_dir_x = 0.0
+            self.tilt_dir_y = 0.0
+            self.tilt_motion_samples.clear()
 
         # 5. Update Click Ripples
         alive_ripples = []
@@ -388,15 +433,19 @@ class CursorPhysics:
         self.ripples = alive_ripples
 
         # 6. Update Motion Trail
-        if trail_enabled and self.speed > 80.0:
-            self.trail_points.append((self.x, self.y, 0.0))
-        
-        updated_trail = []
-        for tx, ty, age in self.trail_points:
-            new_age = age + dt * 4.0
-            if new_age < 1.0:
-                updated_trail.append((tx, ty, new_age))
-        self.trail_points = updated_trail
+        if not trail_enabled:
+            self.trail_points.clear()
+        else:
+            # Fade existing echoes even after the hardware cursor stops.
+            self.trail_points = [(tx, ty, age + dt * 3.2)
+                                 for tx, ty, age in self.trail_points
+                                 if age + dt * 3.2 < 1.0]
+            if self.speed > 80.0 and (not self.trail_points or
+                math.hypot(self.x - self.trail_points[-1][0],
+                           self.y - self.trail_points[-1][1]) >= 10.0):
+                self.trail_points.append((self.x, self.y, 0.0))
+                if len(self.trail_points) > 9:
+                    del self.trail_points[:-9]
 
     def get_render_state(self):
         """Returns the current state needed by the renderer."""

@@ -7,8 +7,9 @@ import json
 import os
 from dataclasses import dataclass, asdict
 from typing import Dict, Any
+from core.hotkeys import normalize_hotkey
 
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+DEFAULT_CONFIG_PATH = os.environ.get("FLUIDCURSOR_CONFIG_PATH") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
 
 @dataclass
 class CursorConfig:
@@ -25,7 +26,7 @@ class CursorConfig:
     snap_on_click: bool = True          # Instant snap to hardware position on click for 100% accuracy
     tilt_enabled: bool = True           # Dynamic tilt in movement direction
     tilt_mode: str = "velocity"         # "velocity", "physics_forward", "physics_opposing"
-    tilt_strength: float = 1.0          # Multiplier for tilt angle (0.1 to 5.0)
+    tilt_strength: float = 1.0          # Tilt strength 0-100% (0.0 to 1.0)
     tilt_deadzone: float = 35.0         # Slow movement deadzone threshold in px/s to prevent low-speed jitter (0 to 120 px/s)
     tilt_decay_enabled: bool = True     # Slowly return cursor to original resting rotation instead of snapping
     tilt_decay_speed: float = 0.5       # Smoothness / duration of rotation return (0.1 to 1.0; higher = slower, smoother decay)
@@ -34,15 +35,30 @@ class CursorConfig:
     tilt_disable_return: bool = False   # Disable returning to original position (maintain tilt angle indefinitely)
     ripples_enabled: bool = True        # Click ripple shockwave animation
     trail_enabled: bool = False         # Motion trail ghosting
+    fun_enabled: bool = False  # Exclusive optional cursor toy; standard settings retained.
+    fun_mode: str = "chain"  # tile, stardust, chain, comet, orbit, yoyo, ribbon, spinner
+    fun_size: int = 30
+    fun_smoothness: int = 55  # 0 = responsive, 100 = gently floating; Fun only.
+    fun_particles: int = 55
+    fun_tile_distance: int = 28
+    fun_chain_length: int = 12
+    fun_chain_swing: int = 65  # 0 = calm, 100 = lively
+    fun_orbit_count: int = 4
+    fun_yoyo_length: int = 88  # Elastic string, pixels.
+    fun_spinner_speed: int = 65  # Movement/click spin energy, 0-100.
+    fun_ribbon_flow: int = 60  # Cloth inertia, 0-100.
+    match_cursor_roles: bool = True  # Match text, links, resize and app-specific cursor shapes
     hide_system_cursor: bool = True     # Hides Windows default cursor
     show_precision_dot: bool = False    # Tiny pixel dot at exact hardware coordinates (Disabled by default)
     precision_dot_white_outline: bool = False # Crisp white outline around precision dot (Disabled by default)
     cursor_size: int = 28               # Cursor size in pixels (16 to 64)
-    cursor_theme: str = "aero_modern"   # aero_modern, neon_glow, macos_fluid, minimal_dot, cyber_arrow
+    cursor_theme: str = "aero_modern"   # built-in styles or custom_arrow (palette controls)
     use_system_cursor_clone: bool = True # Clone and animate active Windows cursor
-    primary_color: str = "#FFFFFF"      # Inner fill color
-    border_color: str = "#1E293B"       # Outer stroke color
+    primary_color: str = "#FFFFFF"      # Custom Colors Arrow fill only
+    border_color: str = "#1E293B"       # Custom Colors Arrow outline only
     ripple_color: str = "#00D2FF"       # Click ripple color
+    language: str = "en"           # en or ar; persisted across restarts
+    ui_theme: str = "system"       # system (Windows apps), dark, or light
     toggle_hotkey: str = "F9"           # Hotkey to toggle on/off
     ram_optimization_mode: bool = True  # Aggressive RAM mode: destroys GUI when minimized & trims working set
 
@@ -58,6 +74,14 @@ class CursorConfig:
             # Filter unknown keys to prevent crashes on schema changes
             valid_keys = cls.__dataclass_fields__.keys()
             filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+            if filtered_data.get("fun_mode") == "fish":
+                filtered_data["fun_mode"] = "chain"  # Legacy mode retirement.
+            filtered_data["language"] = "ar" if filtered_data.get("language") == "ar" else "en"
+            if filtered_data.get("ui_theme") not in ("system", "dark", "light"):
+                filtered_data["ui_theme"] = "system"
+            filtered_data["toggle_hotkey"] = normalize_hotkey(filtered_data.get("toggle_hotkey", "F9"))
+            if "tilt_strength" in filtered_data and isinstance(filtered_data["tilt_strength"], (int, float)):
+                filtered_data["tilt_strength"] = max(0.0, min(1.0, filtered_data["tilt_strength"]))
             return cls(**filtered_data)
         except Exception:
             return cls()

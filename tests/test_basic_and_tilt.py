@@ -195,6 +195,7 @@ class TestBasicAndTilt(unittest.TestCase):
         config = CursorConfig()
         config.save = lambda *args, **kwargs: None
         win = SettingsWindow(config, lambda: None, None)
+        win._load_page(win.tilt_interface)  # The Tilt page builds on first visit.
 
         # 1. Basic page cleanliness: only b_card_tilt exists, no verbose tilt sliders
         self.assertTrue(hasattr(win, "b_card_tilt"), "Basic page must have Dynamic cursor tilt switch")
@@ -219,11 +220,12 @@ class TestBasicAndTilt(unittest.TestCase):
         self.assertTrue(hasattr(win, "t_card_tilt_decay"))
         self.assertTrue(hasattr(win, "t_slider_decay_speed"))
 
-        # 4. Tilt multiplier slider range up to 500%
-        self.assertEqual(win.t_slider_tstr.maximum(), 500)
-        win.t_slider_tstr.setValue(350)
-        self.assertEqual(config.tilt_strength, 3.5)
-        self.assertEqual(win.t_lbl_tstr.text(), "350%")
+        # 4. Tilt strength is normalized to 0-100%, including OFF at zero.
+        self.assertEqual(win.t_slider_tstr.minimum(), 0)
+        self.assertEqual(win.t_slider_tstr.maximum(), 100)
+        win.t_slider_tstr.setValue(75)
+        self.assertEqual(config.tilt_strength, .75)
+        self.assertEqual(win.t_lbl_tstr.text(), "75%")
 
         # 5. Slow movement deadzone slider (0 to 120 px/s)
         self.assertEqual(win.t_slider_deadzone.maximum(), 120)
@@ -430,6 +432,9 @@ class TestBasicAndTilt(unittest.TestCase):
         config = CursorConfig()
         config.save = lambda *args, **kwargs: None
         win = SettingsWindow(config, lambda: None, None)
+        for page in (win.tilt_interface, win.click_interface,
+                     win.app_interface, win.motion_interface):
+            win._load_page(page)
 
         # 1. Tilt page: Disable return to original position
         self.assertTrue(hasattr(win, "t_card_tilt_never_return"))
@@ -465,7 +470,7 @@ class TestBasicAndTilt(unittest.TestCase):
         # 4. Advanced Physics: All cards greyed out when master switch is OFF
         win.card_adv_master.setChecked(False)
         self.assertFalse(win.card_algo.isEnabled())
-        self.assertFalse(win.card_boost.isEnabled())
+        self.assertTrue(win.card_boost.isEnabled())  # Works with standard physics.
         self.assertFalse(win.card_stiff.isEnabled())
         self.assertFalse(win.card_damp.isEnabled())
         self.assertFalse(win.card_pred.isEnabled())
@@ -504,16 +509,25 @@ class TestBasicAndTilt(unittest.TestCase):
         self.assertFalse(win.card_prim.isEnabled(), "Primary color must be greyed out when clone cursor is ON")
         self.assertFalse(win.card_border.isEnabled(), "Border color must be greyed out when clone cursor is ON")
 
-        # Toggling clone cursor OFF re-enables theme and colors
+        # Cloning OFF enables themes, but palette editing requires Custom Colors Arrow.
         win.a_card_clone.setChecked(False)
         self.assertFalse(config.use_system_cursor_clone)
-        self.assertTrue(win.card_theme.isEnabled(), "Theme selection must be enabled when clone cursor is OFF")
-        self.assertTrue(win.card_prim.isEnabled(), "Primary color must be enabled when clone cursor is OFF")
-        self.assertTrue(win.card_border.isEnabled(), "Border color must be enabled when clone cursor is OFF")
+        self.assertTrue(win.card_theme.isEnabled())
+        self.assertFalse(win.card_prim.isEnabled())
+        self.assertFalse(win.card_border.isEnabled())
+        win.combo_theme.setCurrentIndex(5)
+        self.assertEqual(config.cursor_theme, "custom_arrow")
+        self.assertTrue(win.card_prim.isEnabled())
+        self.assertTrue(win.card_border.isEnabled())
+        win.a_card_clone.setChecked(True)
+        self.assertFalse(win.card_prim.isEnabled())
+        win.a_card_clone.setChecked(False)
+        self.assertTrue(win.card_prim.isEnabled())
 
     def test_gui_performance_save_debouncing(self):
         """Verify SettingsWindow has debounce timer to eliminate slider scrubbing disk I/O lag."""
         config = CursorConfig()
+        config.save = lambda *args, **kwargs: None  # Never overwrite live user settings in tests.
         win = SettingsWindow(config, lambda: None, None)
         self.assertTrue(hasattr(win, "_save_timer"), "SettingsWindow must have _save_timer for debouncing")
         self.assertTrue(win._save_timer.isSingleShot(), "Save timer must be single shot")
